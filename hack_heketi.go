@@ -28,6 +28,13 @@ type DeviceEntry struct {
 	ExtentSize uint64
 }
 
+type BrickEntry struct {
+	Info             api.BrickInfo
+	TpSize           uint64
+	PoolMetadataSize uint64
+	gidRequested     int64
+}
+
 func main() {
 	db, err := bolt.Open("heketi.db", 0600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
@@ -54,11 +61,16 @@ func main() {
 					return err
 				}
 
+				fmt.Printf("Device %s, total_size: %d, free: %d\n", k, entry.Info.Storage.Total, entry.Info.Storage.Free)
+				fmt.Println("----------------------------------------")
+
 				if entry.Bricks == nil {
 					entry.Bricks = make(sort.StringSlice, 0)
 				}
 
 				var bricksToRemove = make(sort.StringSlice, 0)
+
+				var brickTotalSpaceUsed uint64
 
 				fmt.Printf("Node ID is %s\n", entry.NodeId)
 				fmt.Printf("Bricks are: [")
@@ -69,7 +81,18 @@ func main() {
 					if value == nil {
 						fmt.Printf("(missing)")
 						bricksToRemove = append(bricksToRemove, id)
+						continue
 					}
+
+					brickEntry := BrickEntry{}
+					dec := gob.NewDecoder(bytes.NewReader(value))
+					err := dec.Decode(&brickEntry)
+					if err != nil {
+						fmt.Printf("%s", err)
+						return err
+					}
+					brickTotalSpaceUsed += brickEntry.TpSize
+
 					comma = ", "
 				}
 				fmt.Printf("]\n")
@@ -78,6 +101,14 @@ func main() {
 					fmt.Printf("removing %s\n", id)
 					entry.Bricks = utils.SortedStringsDelete(entry.Bricks, id)
 				}
+
+				var calculatedFreeSpace uint64 = entry.Info.Storage.Total - brickTotalSpaceUsed
+
+				fmt.Printf("Total space used %d.\n", brickTotalSpaceUsed)
+				fmt.Printf("Free space %d vs %d\n\n", entry.Info.Storage.Free, calculatedFreeSpace)
+
+				entry.Info.Storage.Free = calculatedFreeSpace
+				entry.Info.Storage.Used = brickTotalSpaceUsed
 
 				// save the value back
 				var buffer bytes.Buffer
@@ -88,7 +119,8 @@ func main() {
 					fmt.Printf("%s", err)
 					return err
 				}
-				fmt.Printf("Marshalled data is %s", buffer.Bytes())
+
+				//fmt.Printf("Marshalled data is %s", buffer.Bytes())
 				device_bucket.Put(k, buffer.Bytes())
 			}
 		}
